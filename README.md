@@ -8,8 +8,8 @@ For a more detailed description of the tool, please refer to [1] and [2].
 
 If OpenHarmonics is used for research purposes, please cite [1].
 
-[1] P. Gray, “Harmonic Models of Common Converter Topologies for Accurate Harmonic Analysis of Distribution Systems,” Thesis, 2013.
+[1] P. Gray, “Harmonic Models of Common Converter Topologies for Accurate Harmonic Analysis of Distribution Systems,” Thesis, 2013.  
 [2] P.A. Gray, P.W. Lehn, and G. Kish, "Harmonic Analysis Software Tool for Steady-State Analysis of Distorted Grids with Multiple Distributed Generators," in Proc. Canada Conf.
-CIGRE, Sep. 2014, pp. 1–8.  <br />
+CIGRE, Sep. 2014, pp. 1–8.
 
 In case of any questions or issues related to the tool please post on the "Issues" tab and I will try to answer.
