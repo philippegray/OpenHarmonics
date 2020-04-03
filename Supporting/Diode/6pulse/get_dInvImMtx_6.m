@@ -1,0 +1,36 @@
+%I re-checked this again. It completely matches what is in my notebook.
+%this function outputs the derivative of d/dx(eye(3,3)-Mtx).
+function dInvImMtx = get_dInvImMtx_6(Mtx,dMtx)
+
+det = (Mtx(3,3)-1)*(Mtx(1,1)+Mtx(2,2)-Mtx(1,1)*Mtx(2,2)+...
+    Mtx(1,2)*Mtx(2,1)-1);
+ddet = dMtx(3,3)*Mtx(1,1)+Mtx(3,3)*dMtx(1,1)+dMtx(3,3)*Mtx(2,2)+...
+    Mtx(3,3)*dMtx(2,2)-dMtx(3,3)*Mtx(1,1)*Mtx(2,2)-Mtx(3,3)*...
+    dMtx(1,1)*Mtx(2,2)-Mtx(3,3)*Mtx(1,1)*dMtx(2,2)+dMtx(3,3)*...
+    Mtx(1,2)*Mtx(2,1)+Mtx(3,3)*dMtx(1,2)*Mtx(2,1)+Mtx(3,3)*...
+    Mtx(1,2)*dMtx(2,1)-dMtx(3,3)-dMtx(1,1)-dMtx(2,2)+dMtx(1,1)*...
+    Mtx(2,2)+Mtx(1,1)*dMtx(2,2)-dMtx(1,2)*Mtx(2,1)-Mtx(1,2)*...
+    dMtx(2,1);
+Am11 = (Mtx(3,3)-1)*(Mtx(2,2)-1);
+Am12 = -Mtx(1,2)*(Mtx(3,3)-1);
+Am13 = Mtx(1,3)+Mtx(1,2)*Mtx(2,3)-Mtx(1,3)*Mtx(2,2);
+Am21 = -Mtx(2,1)*(Mtx(3,3)-1);
+Am22 = (Mtx(1,1)-1)*(Mtx(3,3)-1);
+Am23 = Mtx(2,3)-Mtx(1,1)*Mtx(2,3)+Mtx(1,3)*Mtx(2,1);
+Am33 = -Mtx(1,1)-Mtx(2,2)+Mtx(1,1)*Mtx(2,2)-Mtx(1,2)*...
+    Mtx(2,1)+1;
+dAm11 = dMtx(3,3)*Mtx(2,2)+Mtx(3,3)*dMtx(2,2)-dMtx(3,3)-dMtx(2,2);
+dAm12 = -dMtx(1,2)*Mtx(3,3)-Mtx(1,2)*dMtx(3,3)+dMtx(1,2);
+dAm13 = dMtx(1,3)+dMtx(1,2)*Mtx(2,3)+Mtx(1,2)*dMtx(2,3)-dMtx(1,3)*...
+    Mtx(2,2)-Mtx(1,3)*dMtx(2,2);
+dAm21 = -dMtx(2,1)*Mtx(3,3)-Mtx(2,1)*dMtx(3,3)+dMtx(2,1);
+dAm22 = dMtx(1,1)*Mtx(3,3)+Mtx(1,1)*dMtx(3,3)-dMtx(1,1)-dMtx(3,3);
+dAm23 = dMtx(2,3)-dMtx(1,1)*Mtx(2,3)-Mtx(1,1)*dMtx(2,3)+dMtx(1,3)*...
+    Mtx(2,1)+Mtx(1,3)*dMtx(2,1);
+dAm33 = -dMtx(1,1)-dMtx(2,2)+dMtx(1,1)*Mtx(2,2)+Mtx(1,1)*dMtx(2,2)...
+    -dMtx(1,2)*Mtx(2,1)-Mtx(1,2)*dMtx(2,1);
+Am = [Am11,Am12,Am13;Am21,Am22,Am23;0,0,Am33];
+dAm = [dAm11,dAm12,dAm13;dAm21,dAm22,dAm23;0,0,dAm33];
+
+dInvImMtx = 1/(det)^2*(-1)*ddet*Am+1/det*dAm;
+

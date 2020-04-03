@@ -1,0 +1,725 @@
+function [Ia,Ib,Ic,fundCurrents,alpha,mu_out] = solveThyristor12Model(Valphabeta,L,R,...
+    Rdc,Ldc,h,Vdc,P,mu_in,alpha_in)
+
+%Model for Thyristor 12 Pulse Rectifier*****************
+%Model takes inputs and produces outputs
+%Inputs: U matrix = [Vsab^-h ... Vsab^+h Vdc^0 ... Vdc^+h]
+%Outputs: Y vector = [Isab^-h ... Isab^+h Idc^0 ... Idc^+h]
+%There are one iterative loops in the program:
+%outer loop finds the mu1...mu12 alpha values that gives you the desired
+%real power of the converter - one control variable (alpha) = one thing
+%controlled (real power)
+%in that loop we find an FCM and a jacobian for the outer control loop
+%Philippe A. Gray
+%April 26, 2012
+%********************************************************
+
+%Changing after the meeting, new alpha etc.
+global f Mag_abc Idc Ts w phase SymMtx invSymMtx
+
+%Initializations***************************
+A = SymMtx;
+invA = invSymMtx;
+iterAdd = 0.001;
+
+delPhase = 30*pi/180; %the sign is correct assuming delta side lags the wye side by 30 degrees.
+countIter = 1;
+
+error = 0;
+flag_error = 0;
+w = 1;
+tolerance = 0.001;
+f = w/2/pi;
+Tac = 1/f;
+lenHarm = 2*h+1;
+%Mag_abc = [0.8; 1;0.8]; %units: V_{pk}
+Vout = Vdc; %assuming first that Vout is actually just a DC value...it won't be necessarily though so I will change this later.  This problem is directly analogous with the Idc FCM issues encountered in the VSC model.
+Pload = P; %2.6,1.2 works
+
+V_abc = SymMtx*[0;Valphabeta(lenHarm+2)+1i*Valphabeta(lenHarm+3);...
+    Valphabeta(2*h-1)+1i*Valphabeta(2*h)];
+Mag_abc = [abs(V_abc(1));abs(V_abc(2));abs(V_abc(3))];
+Phase_abc = [angle(V_abc(1));angle(V_abc(2));angle(V_abc(3))];
+
+CTF = 2/3*[1 -1/2 -1/2;0 sqrt(3)/2 -sqrt(3)/2;1/sqrt(2) 1/sqrt(2) 1/sqrt(2)];
+CTFsmall = CTF(1:2,1:3);
+invCTF = inv(CTF);
+invCTFsmall = invCTF(1:3,1:2);
+%arrPosArr = [1;2;3;1;2;3];
+
+Mi = zeros(12,3);
+for i = 0:1
+    Mi(1+i,1:end) = [(-2*i+1)*[0 sqrt(3) 0]*invCTFsmall 1];
+    Mi(3+i,1:end) = [(-2*i+1)*[-sqrt(3) 0 0]*invCTFsmall 1];
+    Mi(5+i,1:end) = [(-2*i+1)*[0 0 sqrt(3)]*invCTFsmall 1];
+    Mi(7+i,1:end) = [(-2*i+1)*[0 -sqrt(3) 0]*invCTFsmall 1];
+    Mi(9+i,1:end) = [(-2*i+1)*[sqrt(3) 0 0]*invCTFsmall 1];
+    Mi(11+i,1:end) = [(-2*i+1)*[0 0 -sqrt(3)]*invCTFsmall 1];
+end
+Mi_deriv = zeros(12,3);
+for i = 0:1
+    Mi_deriv(1+i,1:end) = [(-2*i+1)*[0 -sqrt(3) 0]*invCTFsmall 0];
+    Mi_deriv(3+i,1:end) = [(-2*i+1)*[sqrt(3) 0 0]*invCTFsmall 0];
+    Mi_deriv(5+i,1:end) = [(-2*i+1)*[0 0 -sqrt(3)]*invCTFsmall 0];
+    Mi_deriv(7+i,1:end) = [(-2*i+1)*[0 sqrt(3) 0]*invCTFsmall 0];
+    Mi_deriv(9+i,1:end) = [(-2*i+1)*[-sqrt(3) 0 0]*invCTFsmall 0];
+    Mi_deriv(11+i,1:end) = [(-2*i+1)*[0 0 sqrt(3)]*invCTFsmall 0];
+end
+
+%end initializations************************
+
+Vsabc_phasor = zeros(3,1);
+for i = 1:3
+    [x y] = pol2cart(Phase_abc(i),Mag_abc(i));
+    Vsabc_phasor(i) = x + 1i*y;
+end
+
+temp = [1 -1 0;0 1 -1;-1 0 1]*[Vsabc_phasor(1);Vsabc_phasor(2);Vsabc_phasor(3)];
+    
+Mag_sv = abs(temp);
+Phase_sv = angle(temp);
+
+times = zeros(12,1);
+prevComp = 0;
+count = 1;
+
+%Testing out new algorithm for switching times**********************
+symMatrix = invA*Vsabc_phasor;
+
+posSeq = symMatrix(2);
+negSeq = symMatrix(3);
+
+phase = angle(posSeq)-0;%-30/180*pi;%150/180*pi;
+Ts = zeros(36,1);
+Ts(1:end) = [1,2,3,4,5,6,7,8,9,10,11,12,1,2,3,4,5,6,7,8,9,10,11,12,...
+    1,2,3,4,5,6,7,8,9,10,11,12];
+
+count = 1;
+Zi = zeros(3*lenHarm+1,1);
+Zi(1:2*lenHarm,1) = Valphabeta;
+Zi(2*lenHarm+1) = Vdc;
+%**************************************************************************
+
+%Now that the Ts(1,1) and alpha are known and the input vector has been
+%provided...we can use a rotation matrix to move the input vector to a time
+%equal to Ts(1,1) + alpha
+
+%Ts(*,*) contains the swithing times and the 2 phase voltage conduction for
+%each conduction interval from 0 -> 2*pi
+%An example: Ts(i,1) contains the next switching time, and Ts(i,2) contains
+%the 2 phase voltage conduction for Ts(i-1,1) --> Ts(i,1)
+
+Ncond_coeff = zeros(3,3,12);
+Acond = zeros(3,3,12);
+
+Acond(3,3,1:end) = ones(1,1,12)*-(4*R+Rdc)/(4*L+Ldc);
+Ncond_coeff(3,3,1:end) = ones(1,1,12)*-1/(4*L+Ldc);
+
+Acond_coeff_1 = [1+2/sqrt(3);-1/sqrt(3);-1-1/sqrt(3)];
+Acond_coeff_2 = [1+1/sqrt(3);1/sqrt(3);-1-2/sqrt(3)];
+Acond_coeff_3 = [1/sqrt(3);1+1/sqrt(3);-1-2/sqrt(3)];
+Acond_coeff_4 = [-1/sqrt(3);1+2/sqrt(3);-1-1/sqrt(3)];
+Acond_coeff_5 = [-1-1/sqrt(3);1+2/sqrt(3);-1/sqrt(3)];
+Acond_coeff_6 = [-1-2/sqrt(3);1+1/sqrt(3);1/sqrt(3)];
+Acond_coeff_7 = [-1-2/sqrt(3);1/sqrt(3);1+1/sqrt(3)];
+Acond_coeff_8 = [-1-1/sqrt(3);-1/sqrt(3);1+2/sqrt(3)];
+Acond_coeff_9 = [-1/sqrt(3);-1-1/sqrt(3);1+2/sqrt(3)];
+Acond_coeff_10 = [1/sqrt(3);-1-2/sqrt(3);1+1/sqrt(3)];
+Acond_coeff_11 = [1+1/sqrt(3);-1-2/sqrt(3);1/sqrt(3)];
+Acond_coeff_12 = [1+2/sqrt(3);-1-1/sqrt(3);-1/sqrt(3)];
+
+Acond_coeff = [Acond_coeff_1,Acond_coeff_2,Acond_coeff_3,Acond_coeff_4,...
+    Acond_coeff_5,Acond_coeff_6,Acond_coeff_7,Acond_coeff_8,...
+    Acond_coeff_9,Acond_coeff_10,Acond_coeff_11,Acond_coeff_12];
+
+Ncond_coeff_2_1 = [1+sqrt(3),0,-1];
+Ncond_coeff_2_2 = [1,0,-1-sqrt(3)];
+Ncond_coeff_2_3 = [0,1,-1-sqrt(3)];
+Ncond_coeff_2_4 = [0,1+sqrt(3),-1];
+Ncond_coeff_2_5 = [-1,1+sqrt(3),0];
+Ncond_coeff_2_6 = [-1-sqrt(3),1,0];
+Ncond_coeff_2_7 = [-1-sqrt(3),0,1];
+Ncond_coeff_2_8 = [-1,0,1+sqrt(3)];
+Ncond_coeff_2_9 = [0,-1,1+sqrt(3)];
+Ncond_coeff_2_10 = [0,-1-sqrt(3),1];
+Ncond_coeff_2_11 = [1,-1-sqrt(3),0];
+Ncond_coeff_2_12 = [1+sqrt(3),-1,0];
+
+Ncond_coeff_2 = [Ncond_coeff_2_1;Ncond_coeff_2_2;Ncond_coeff_2_3;...
+    Ncond_coeff_2_4;Ncond_coeff_2_5;Ncond_coeff_2_6;Ncond_coeff_2_7;...
+    Ncond_coeff_2_8;Ncond_coeff_2_9;Ncond_coeff_2_10;Ncond_coeff_2_11;...
+    Ncond_coeff_2_12];
+
+for i = 1:12
+    Acond(1:2,3,i) = CTFsmall*Acond_coeff(1:end,i)*Acond(3,3,i);
+    Ncond_coeff(1:2,3,i) = CTFsmall*Acond_coeff(1:end,i)*Ncond_coeff(3,3,i);
+    Ncond_coeff(3,1:2,i) = 1/(4*L+Ldc)*Ncond_coeff_2(i,1:end)*invCTFsmall;
+    Ncond_coeff(1:2,1:2,i) = CTFsmall*Acond_coeff(1:end,i)*Ncond_coeff(3,1:2,i);
+end
+
+Acomm = zeros(3,3,12);
+Ncomm_coeff = zeros(3,3,12);
+
+Acomm(3,3,1:end)= ones(1,1,12)*-(7/2*R+Rdc)/(7/2*L+Ldc);
+Ncomm_coeff(3,3,1:end) = ones(1,1,12)*-1/(7/2*L+Ldc);
+
+Acomm_coeff_1_1 = [1+2/sqrt(3); -1/2-1/sqrt(3); -1/2-1/sqrt(3)];
+Acomm_coeff_1_2 = [1+sqrt(3)/2; 0; -1-sqrt(3)/2];
+Acomm_coeff_1_3 = [1/2+1/sqrt(3); 1/2+1/sqrt(3); -1-2/sqrt(3)];
+Acomm_coeff_1_4 = [0; 1+sqrt(3)/2; -1-sqrt(3)/2];
+Acomm_coeff_1_5 = [-1/2-1/sqrt(3); 1+2/sqrt(3); -1/2-1/sqrt(3)];
+Acomm_coeff_1_6 = [-1-sqrt(3)/2; 1+sqrt(3)/2; 0];
+Acomm_coeff_1_7 = [-1-2/sqrt(3); 1/2+1/sqrt(3); 1/2+1/sqrt(3)];
+Acomm_coeff_1_8 = [-1-sqrt(3)/2; 0; 1+sqrt(3)/2];
+Acomm_coeff_1_9 = [-1/2-1/sqrt(3); -1/2-1/sqrt(3); 1+2/sqrt(3)];
+Acomm_coeff_1_10 = [0; -1-sqrt(3)/2; 1+sqrt(3)/2];
+Acomm_coeff_1_11 = [1/2+1/sqrt(3); -1-2/sqrt(3); 1/2+1/sqrt(3)];
+Acomm_coeff_1_12 = [1+sqrt(3)/2; -1-sqrt(3)/2; 0];
+Acomm_coeff = [Acomm_coeff_1_1,Acomm_coeff_1_2,Acomm_coeff_1_3,...
+    Acomm_coeff_1_4,Acomm_coeff_1_5,Acomm_coeff_1_6,Acomm_coeff_1_7,...
+    Acomm_coeff_1_8,Acomm_coeff_1_9,Acomm_coeff_1_10,Acomm_coeff_1_11,...
+    Acomm_coeff_1_12];
+
+Acomm_coeff_2_1 = [ 0; 1/2+1/sqrt(3); 1/2+1/sqrt(3)];
+Acomm_coeff_2_2 = [ -1/3-1/2/sqrt(3); 0; 1/3+1/2/sqrt(3)];
+Acomm_coeff_2_3 = -[ 1/2+1/sqrt(3); 1/2+1/sqrt(3); 0];
+Acomm_coeff_2_4 = [ 0; -1/3-1/2/sqrt(3); 1/3+1/2/sqrt(3)];
+Acomm_coeff_2_5 = [ 1/2+1/sqrt(3); 0; 1/2+1/sqrt(3)];
+Acomm_coeff_2_6 = [ 1/3+1/2/sqrt(3); -1/3-1/2/sqrt(3); 0];
+Acomm_coeff_2_7 = -[ 0; 1/2+1/sqrt(3); 1/2+1/sqrt(3)];
+Acomm_coeff_2_8 = [ 1/3+1/2/sqrt(3); 0; -1/3-1/2/sqrt(3)];
+Acomm_coeff_2_9 = [ 1/2+1/sqrt(3); 1/2+1/sqrt(3); 0];
+Acomm_coeff_2_10 = [ 0; 1/3+1/2/sqrt(3); -1/3-1/2/sqrt(3)];
+Acomm_coeff_2_11 = -[ 1/2+1/sqrt(3); 0; 1/2+1/sqrt(3)];
+Acomm_coeff_2_12 = [ -1/3-1/2/sqrt(3); 1/3+1/2/sqrt(3); 0];
+Acomm_coeff_2 = -R/L*[Acomm_coeff_2_1,Acomm_coeff_2_2,Acomm_coeff_2_3,...
+    Acomm_coeff_2_4,Acomm_coeff_2_5,Acomm_coeff_2_6,Acomm_coeff_2_7,...
+    Acomm_coeff_2_8,Acomm_coeff_2_9,Acomm_coeff_2_10,Acomm_coeff_2_11,...
+    Acomm_coeff_2_12];
+
+Acomm_coeff_3 = zeros(3,3,12);
+Acomm_coeff_3(1:end,1:end,1) = R/L*[ 0,0,0; 0,-1,0; 0,0,-1];
+Acomm_coeff_3(1:end,1:end,2) = R/L*[ -1/3 1/3 0; 1/3 -2/3 1/3; 0 1/3 -1/3];
+Acomm_coeff_3(1:end,1:end,3) = R/L*[ -1 0 0; 0 -1 0; 0 0 0];
+Acomm_coeff_3(1:end,1:end,4) = R/L*[ -2/3 1/3 1/3; 1/3 -1/3 0; 1/3 0 -1/3];
+Acomm_coeff_3(1:end,1:end,5) = R/L*[ -1 0 0; 0 0 0; 0 0 -1];
+Acomm_coeff_3(1:end,1:end,6) = R/L*[ -1/3 0 1/3; 0 -1/3 1/3; 1/3 1/3 -2/3];
+Acomm_coeff_3(1:end,1:end,7) = R/L*[ 0 0 0; 0 -1 0; 0 0 -1];
+Acomm_coeff_3(1:end,1:end,8) = R/L*[ -1/3 1/3 0; 1/3 -2/3 1/3; 0 1/3 -1/3];
+Acomm_coeff_3(1:end,1:end,9) = R/L*[ -1 0 0; 0 -1 0; 0 0 0];
+Acomm_coeff_3(1:end,1:end,10) = R/L*[ -2/3 1/3 1/3; 1/3 -1/3 0; 1/3 0 -1/3];
+Acomm_coeff_3(1:end,1:end,11) = R/L*[ -1 0 0; 0 0 0; 0 0 -1];
+Acomm_coeff_3(1:end,1:end,12) = R/L*[ -1/3 0 1/3; 0 -1/3 1/3; 1/3 1/3 -2/3];
+
+Ncomm_coeff_2_1 = [ 1+sqrt(3), -1/2, -1/2];
+Ncomm_coeff_2_2 = [ 1+sqrt(3), sqrt(3)/2, -1];
+Ncomm_coeff_2_3 = [ 1/2, 1/2, -sqrt(3)-1];
+Ncomm_coeff_2_4 = [ sqrt(3)/2, 1+sqrt(3), -1];
+Ncomm_coeff_2_5 = [ -1/2, 1+sqrt(3), -1/2];
+Ncomm_coeff_2_6 = [ -1, 1+sqrt(3), sqrt(3)/2];
+Ncomm_coeff_2_7 = [ -1-sqrt(3), 1/2, 1/2];
+Ncomm_coeff_2_8 = [ -1, sqrt(3)/2, 1+sqrt(3)];
+Ncomm_coeff_2_9 = [ -1/2, -1/2, sqrt(3)+1];
+Ncomm_coeff_2_10 = [ sqrt(3)/2, -1, 1+sqrt(3)];
+Ncomm_coeff_2_11 = [ 1/2, -1-sqrt(3), 1/2];
+Ncomm_coeff_2_12 = [ 1+sqrt(3), -1, sqrt(3)/2];
+Ncomm_coeff_2 = [Ncomm_coeff_2_1;Ncomm_coeff_2_2;Ncomm_coeff_2_3;...
+    Ncomm_coeff_2_4;Ncomm_coeff_2_5;Ncomm_coeff_2_6;Ncomm_coeff_2_7;...
+    Ncomm_coeff_2_8;Ncomm_coeff_2_9;Ncomm_coeff_2_10;Ncomm_coeff_2_11;...
+    Ncomm_coeff_2_12];
+
+Ncomm_coeff_3 = zeros(3,3,12);
+Ncomm_coeff_3(1:end,1:end,1) = [ 0, 0, 0; 0, 1/2, -1/2; 0, -1/2, 1/2];
+Ncomm_coeff_3(1:end,1:end,2) = [ 0, -1/2, 0; 0, 1, 0; 0, -1/2, 0];
+Ncomm_coeff_3(1:end,1:end,3) = [ 1/2, -1/2, 0; -1/2, 1/2, 0; 0, 0, 0];
+Ncomm_coeff_3(1:end,1:end,4) = [ 1, 0, 0; -1/2, 0, 0; -1/2, 0, 0];
+Ncomm_coeff_3(1:end,1:end,5) = [ 1/2, 0, -1/2; 0, 0, 0; -1/2, 0, 1/2];
+Ncomm_coeff_3(1:end,1:end,6) = [ 0, 0, -1/2; 0, 0, -1/2; 0, 0, 1];
+Ncomm_coeff_3(1:end,1:end,7) = [ 0, 0, 0; 0, 1/2, -1/2; 0, -1/2, 1/2];
+Ncomm_coeff_3(1:end,1:end,8) = [ 0, -1/2, 0; 0, 1, 0; 0, -1/2, 0];
+Ncomm_coeff_3(1:end,1:end,9) = [ 1/2, -1/2, 0; -1/2, 1/2, 0; 0, 0, 0];
+Ncomm_coeff_3(1:end,1:end,10) = [ 1, 0, 0; -1/2, 0, 0; -1/2, 0, 0];
+Ncomm_coeff_3(1:end,1:end,11) = [ 1/2, 0, -1/2; 0, 0, 0; -1/2, 0, 1/2];
+Ncomm_coeff_3(1:end,1:end,12) = [ 0, 0, -1/2; 0, 0, -1/2; 0, 0, 1];
+
+for i = 1:12
+   Ncomm_coeff(3,1:2,i) = 1/(7/2*L+Ldc)*Ncomm_coeff_2(i,1:end)*invCTFsmall; 
+   Acomm(1:2,3,i) = CTFsmall*Acomm_coeff(1:end,i)*Acomm(3,3,i)+...
+       CTFsmall*Acomm_coeff_2(1:end,i);
+   Acomm(1:2,1:2,i) = CTFsmall*Acomm_coeff_3(1:end,1:end,i)*invCTFsmall;
+   Ncomm_coeff(1:2,1:2,i) = 1/L*CTFsmall*Ncomm_coeff_3(1:end,1:end,i)*...
+       invCTFsmall+CTFsmall*Acomm_coeff(1:end,i)*Ncomm_coeff(3,1:2,i);
+   Ncomm_coeff(1:2,3,i) = CTFsmall*Acomm_coeff(1:end,i)*Ncomm_coeff(3,3,i);
+end
+
+%**************************************************************************
+Ncond = zeros(3,2*lenHarm+2*h+2,12);
+for j = 1:12
+    for i = 1:2:2*lenHarm
+        Ncond(1:end,i:i+1,j) = Ncond_coeff(1:end,1:2,j);
+    end
+end
+%****************************************
+for j = 1:12
+    for i = 2*lenHarm+1:2:2*lenHarm+lenHarm+1
+        Ncond(1:end,i:i+1,j) = [Ncond_coeff(1:end,3,j),zeros(3,1)];
+    end
+end
+%****************************************
+
+Ncomm = zeros(3,3*lenHarm+1,12);
+
+%****************************************
+for j = 1:12
+    for i = 1:2:2*lenHarm
+        Ncomm(1:end,i:i+1,j) = Ncomm_coeff(1:end,1:2,j);
+    end
+end
+%****************************************
+%****************************************
+for j = 1:12
+    for i = 2*lenHarm+1:2:2*lenHarm+lenHarm+1
+        Ncomm(1:end,i:i+1,j) = [Ncomm_coeff(1:end,3,j),zeros(3,1)];
+    end
+end
+%****************************************
+
+%I'm assuming everything previous to this point is correct...I'm pretty
+%sure it is as I have checked.  That being said,there may be an error
+%somewhere in one of the coefficient arrays.
+
+mu = ones(13,1);%pi/12*ones(13,1);%(0.432)*ones(13,1); %Initialization
+mu(1:12) = mu_in;
+mu(13) = alpha_in;
+alpha = alpha_in;
+%The following for loop calculates the delta mu(1)...mu(3) terms in the
+%Jacobian matrix formulation.
+new_mu = zeros(13,1);
+At = zeros(3,3);
+Nt = zeros(3,3*lenHarm+1);
+Omegat = zeros(3*lenHarm+1,3*lenHarm+1);
+ThetaM = eye(3);
+
+count = -h;
+for i = 1:2:2*lenHarm
+    Omegat(i:i+1,i:i+1) = [0 -count;count 0];
+    count = count + 1;
+end
+count = 0;
+for i = 2*lenHarm+1:2:2*lenHarm+lenHarm
+    Omegat(i:i+1,i:i+1) = [0 -count;count 0];
+    count = count + 1;
+end
+Mcond = zeros(3+3*lenHarm+1,3+3*lenHarm+1);
+Mcomm = zeros(3+3*lenHarm+1,3+3*lenHarm+1);
+Mt_arr = zeros(3+3*lenHarm+1,3+3*lenHarm+1,12);
+derivMp = zeros(3+3*lenHarm+1,3+3*lenHarm+1,12,12); %3rd column contains the partial
+Mp = zeros(3+3*lenHarm+1,3+3*lenHarm+1,12);
+Ap = zeros(3,3,12);
+Np = zeros(3,3*lenHarm+1,12);
+Omegap = zeros(3*lenHarm+1,3*lenHarm+1,12);
+
+%This loop is used to solve for the alpha that will yield the required
+%power sourced by the load.
+
+Ahat = zeros(3+3*lenHarm+1+3*lenHarm+1);
+
+H = zeros(3*lenHarm+1,3);
+Mm  = Omegat;
+
+count = 1;
+for i = h:-1:-h
+    H(count:count+1,1:2) = 1/2/pi*[cos(2*i*pi) sin(2*i*pi);-sin(2*i*pi) cos(2*i*pi)]; %this COULD be wrong, not sure though.
+    count = count + 2;
+end
+
+for i = count:2:count+2*h+2-1
+	H(i,3) = 1/Tac;
+end
+
+Ahat(3+3*lenHarm+1+1:end,1:3) = H;
+Ahat(4:3+3*lenHarm+1,4:3+3*lenHarm+1) = Omegat;
+Ahat(3+3*lenHarm+1+1:end,3+3*lenHarm+1+1:end) = Mm;
+
+while(true)
+    
+    %This loop is used to solve for mu(1) --> mu(6) through a Newton Raphson
+    %Iterative solving technique.
+    
+    RotationMatrix = zeros(3*lenHarm+1,3*lenHarm+1,12);
+    Zi_arr = zeros(3*lenHarm+1,12);
+    for k = 0:1:11
+        count = 1;
+        for i  = -h:1:h
+            RotationMatrix(count:count+1,count:count+1,k+1) = ...
+                [cos(i*(k*pi/6+alpha-phase)),...
+                -sin(i*(k*pi/6+alpha-phase));...
+                sin(i*(k*pi/6+alpha-phase)),...
+                cos(i*(k*pi/6+alpha-phase))];
+            count = count + 2;
+        end
+        for i = 0:h
+            RotationMatrix(count:count+1,count:count+1,k+1) = ...
+                [cos(i*(k*pi/6+alpha-phase)),...
+                -sin(i*(k*pi/6+alpha-phase));...
+                sin(i*(k*pi/6+alpha-phase)),...
+                cos(i*(k*pi/6+alpha-phase))];
+            count = count + 2;
+        end
+        Zi_arr(1:end,k+1) = RotationMatrix(1:end,1:end,k+1)*Zi;
+    end
+    for j = 1:12
+        Mp(1:end,1:end,j) = eye(length(Mp));
+        for k = 1:12
+            derivMp(1:end,1:end,j,k) = eye(length(derivMp));%zeros(length(derivMp));%
+        end
+    end
+    
+    %This block of code generates the Mp matrix elements and the dMp/dx
+    %elements
+    
+    %This block of code obtaines all the matrix exponentials that will be
+    %needed for the first part of the code.
+    
+    %third column is referring to interval with respect to the primary
+    %rotation configuration
+    %fourth column contains 3 particular exponential calculations
+    expmCommMu = zeros(length(Ahat),length(Ahat),12);
+    expmCondMu = zeros(length(Ahat),length(Ahat),12);
+    expmCondMuPi_3 = zeros(length(Ahat),length(Ahat),12);
+    
+    Phi = eye(3+3*lenHarm+1+3*lenHarm+1);
+    for i = 1:12
+        Ahat(1:3,1:3+3*lenHarm+1) = [Acomm(1:end,1:end,i),Ncomm(1:end,1:end,i)];
+        expmCommMu(1:end,1:end,i) = expm(Ahat*mu(i));
+        Ahat(1:3,1:3+3*lenHarm+1) = [Acond(1:end,1:end,i),Ncond(1:end,1:end,i)];
+        expmCondMu(1:end,1:end,i) = expm(-Ahat*mu(i));
+        expmCondMuPi_3(1:end,1:end,i) = expm(Ahat*pi/6);       
+    
+        Phi = expmCondMuPi_3(1:end,1:end,i)*...
+            expmCondMu(1:end,1:end,i)*expmCommMu(1:end,1:end,i)*Phi;
+    end
+    
+    maxPos = 3+3*lenHarm+1;
+    
+    for i = 0:11
+        for j = 1:12
+            Mcond(1:3,1:3) = Acond(1:end,1:end,Ts(i+j));
+            Mcond(1:3,4:end) = Ncond(1:end,1:end,Ts(i+j));
+            Mcond(4:end,4:end) = Omegat;
+            Mcomm(1:3,1:3) = Acomm(1:end,1:end,Ts(i+j));
+            Mcomm(1:3,4:end) = Ncomm(1:end,1:end,Ts(i+j));
+            Mcomm(4:end,4:end) = Omegat;
+            
+            Mp(1:end,1:end,i+1) = expmCondMuPi_3(1:maxPos,1:maxPos,Ts(j+i))*...
+                expmCondMu(1:maxPos,1:maxPos,Ts(j+i))*expmCommMu(1:maxPos,1:maxPos,Ts(i+j))*Mp(1:end,1:end,i+1);
+            
+            for k = 1:12
+                if k == j
+                    derivMp(1:end,1:end,k,i+1) = expmCondMuPi_3(1:maxPos,1:maxPos,Ts(j+i))*...
+                        (-Mcond*expmCondMu(1:maxPos,1:maxPos,Ts(i+j))+...
+                        expmCondMu(1:maxPos,1:maxPos,Ts(i+j))*Mcomm)*expmCommMu(1:maxPos,1:maxPos,Ts(i+j))*...
+                        derivMp(1:end,1:end,k,i+1);
+                else
+                    derivMp(1:end,1:end,k,i+1) = expmCondMuPi_3(1:maxPos,1:maxPos,Ts(j+i))*...
+                        expmCondMu(1:maxPos,1:maxPos,Ts(j+i))*...
+                        expmCommMu(1:maxPos,1:maxPos,Ts(i+j))*derivMp(1:end,1:end,k,i+1);
+                end
+            end
+        end
+    end
+    
+    %the 4th dimension is whether it be M1,M2,M3 (each has an offset to the initial vector)
+    %the 3rd dimension is for the derivative with respect to mu1,mu2,mu3
+    dMp_dmu = zeros(length(Mp),length(Mp),12,12);
+    
+    for i = 0:1:11
+        for j = 1:1:12
+            dMp_dmu(1:end,1:end,Ts(j+i),i+1) = derivMp(1:end,1:end,j,i+1);
+        end
+    end
+    
+    %the Mp derivative terms should be fine now.
+    for i = 1:1:12
+        Ap(1:end,1:end,i) = Mp(1:3,1:3,i);
+        Np(1:end,1:end,i) = Mp(1:3,4:end,i);
+        Omegap(1:end,1:end,i) = Mp(4:end,4:end,i);
+    end
+    
+    derivMt = zeros(3+3*lenHarm+1,3+3*lenHarm+1,12);
+    
+    %M2 SOLVE
+    %This block calculates the derivative of the Mt matrix elements.
+    for k = 1:12
+        Mcomm(1:3,1:3) = Acomm(1:end,1:end,Ts(k));
+        Mcomm(1:3,4:end) = Ncomm(1:end,1:end,Ts(k));
+        Mcomm(4:end,4:end) = Omegat;
+        
+        Mt_arr(1:end,1:end,k) = expmCommMu(1:maxPos,1:maxPos,k);
+        derivMt(1:end,1:end,k) = Mcomm*Mt_arr(1:end,1:end,k);
+    end
+    
+    %Derivation of FCM
+    
+
+    %at this point...i can do a for loop to ADD all the Ahat matrices and
+    %then the exponential of this combined value would be taken...should
+    %reduce computation time significantly.
+    
+    Hp = Phi(4+3*lenHarm+1:end,1:3);
+    Ap_mat = Phi(1:3,1:3);
+    Np_mat = Phi(1:3,4:3*lenHarm+4);
+    Qp = Phi(3*lenHarm+4+1:end,4:3*lenHarm+4);
+    
+    %FCM = abs(Hp*(inv(eye(3,3)-Ap))*Np+Qp);
+    FCM = Hp*(inv(eye(3,3)-Ap_mat))*Np_mat+Qp;
+    %testing new FCM formulation since currently, the third column of Ap
+    %contains all 0's --> which implies a non-invertable matrix.
+    
+    dPhi_dmu = zeros(length(Phi),length(Phi),12);
+    for i = 1:12
+        dPhi_dmu(1:end,1:end,i) = eye(length(Phi));
+    end
+    
+    Ahat2 = Ahat;
+    
+    for i = 1:12
+        for j = 1:12
+            if i ~= j
+                dPhi_dmu(1:end,1:end,i) = expmCondMuPi_3(1:end,1:end,j)*...
+                    expmCondMu(1:end,1:end,j)*expmCommMu(1:end,1:end,j)*...
+                    dPhi_dmu(1:end,1:end,i);
+            else
+                Ahat(1:3,1:3+3*lenHarm+1) = [Acomm(1:end,1:end,j),Ncomm(1:end,1:end,j)];
+                Ahat2(1:3,1:3+3*lenHarm+1) = [Acond(1:end,1:end,j),Ncond(1:end,1:end,j)];
+                dPhi_dmu(1:end,1:end,i) = expmCondMuPi_3(1:end,1:end,j)*...
+                    (-Ahat2*expmCondMu(1:end,1:end,j)+expmCondMu(1:end,1:end,j)*Ahat)...
+                    *expmCommMu(1:end,1:end,j)*dPhi_dmu(1:end,1:end,i);
+            end
+        end
+    end
+    
+    I = FCM*Zi_arr(1:end,1);
+    
+    %Is Ialpha + Ibeta - the calculated value similar!!!...if not then redo
+    %loop
+    
+    derivRotation = zeros(length(FCM),length(FCM),12);
+    for j = 0:1:11
+        count = 1;
+        for i  = -h:1:h
+            derivRotation(count:count+1,count:count+1,j+1) = [-i*sin(i*(j*pi/6+alpha-phase)),...
+                -i*cos(i*(j*pi/6+alpha-phase));i*cos(i*(j*pi/6+alpha-phase)) -i*sin(i*(j*pi/6+alpha-phase))];
+            count = count + 2;
+        end
+        for i  = 0:1:h
+            derivRotation(count:count+1,count:count+1,j+1) = [-i*sin(i*(j*pi/6+alpha-phase)),...
+                -i*cos(i*(j*pi/6+alpha-phase));i*cos(i*(j*pi/6+alpha-phase)) -i*sin(i*(j*pi/6+alpha-phase))];
+            count = count + 2;
+        end
+    end
+    
+    Idc = I(2*lenHarm+1);
+    if countIter == 1
+        Iinit = Idc;
+    end
+    Vdc = Zi(2*lenHarm+1);
+    Ctemp = FCM*derivRotation(1:end,1:end,1);
+    Ctemp = Ctemp(2*lenHarm+1,1:end);
+    dIdc_dalpha = Ctemp*Zi;
+    
+    %I also need the correct Mcomm...
+    %There has to be a conditional if statement that if j ==
+    %arrPosArr(Ts(12,2)), then for M1 M2 M3 the values have to be saved for
+    %that derivative term.  Actually, might not even need to use a loop for
+    %this...could just directly add the terms as no further derivateves are
+    %required.
+    %**************************************************
+    J = zeros(13,13);
+    derivInv2 = zeros(3,3);
+    for i = 1:12
+        for j = 1:12
+            At = Mt_arr(1:3,1:3,i);
+            if i == j
+                dAt = derivMt(1:3,1:3,i);
+                dNt = derivMt(1:3,4:end,i);
+            else
+                dAt = zeros(3,3);
+                dNt = zeros(3,3*lenHarm+1);
+            end
+            dAp = dMp_dmu(1:3,1:3,j,i);
+            dNp = dMp_dmu(1:3,4:end,j,i);
+            invA = inv(ThetaM-Ap(1:3,1:3,i));
+            %FIX THIS!!!!!!**********************
+            det = (1-Ap(3,3,i))*(1-Ap(1,1,i)-Ap(2,2,i)+Ap(1,1,i)*...
+                Ap(2,2,i)-Ap(1,2,i)*Ap(2,1,i));
+
+            ddet_mu = (-1+Ap(2,2,i)+Ap(3,3,i)-Ap(3,3,i)*Ap(2,2,i))*dAp(1,1)+...
+                (-Ap(2,1,i)+Ap(3,3,i)*Ap(2,1,i))*dAp(1,2)+...
+                (-Ap(1,2,i)+Ap(3,3,i)*Ap(1,2,i))*dAp(2,1)+...
+                (-1+Ap(1,1,i)+Ap(3,3,i)-Ap(3,3,i)*Ap(1,1,i))*dAp(2,2)+...
+                (-1+Ap(1,1,i)+Ap(2,2,i)-Ap(1,1,i)*Ap(2,2,i)+Ap(1,2,i)*Ap(2,1,i))*dAp(3,3);
+            derivInv2(1,1) = det*(-dAp(2,2)-dAp(3,3)+Ap(2,2,i)*dAp(3,3)+...
+                Ap(3,3,i)*dAp(2,2))-ddet_mu*(1-Ap(2,2,i)-Ap(3,3,i)+Ap(2,2,i)*Ap(3,3,i));
+            derivInv2(1,2) = det*(dAp(1,2)-Ap(1,2,i)*dAp(3,3)-Ap(3,3,i)*dAp(1,2))-...
+                ddet_mu*(Ap(1,2,i)-Ap(1,2,i)*Ap(3,3,i));
+            derivInv2(2,1) = det*(dAp(2,1)-Ap(2,1,i)*dAp(3,3)-Ap(3,3,i)*dAp(2,1))-...
+                ddet_mu*(Ap(2,1,i)-Ap(2,1,i)*Ap(3,3,i));
+            derivInv2(2,2) = det*(-dAp(1,1)-dAp(3,3)+Ap(1,1,i)*dAp(3,3)+...
+                Ap(3,3,i)*dAp(1,1))-ddet_mu*(1-Ap(1,1,i)-Ap(3,3,i)+Ap(1,1,i)*Ap(3,3,i));
+            derivInv2(3,3) = det*(-dAp(1,1)-dAp(2,2)+Ap(1,1,i)*dAp(2,2)+...
+                Ap(2,2,i)*dAp(1,1)-Ap(1,2,i)*dAp(2,1)-Ap(2,1,i)*dAp(1,2))-...
+                ddet_mu*(1-Ap(1,1,i)-Ap(2,2,i)+Ap(1,1,i)*Ap(2,2,i)-Ap(1,2,i)*Ap(2,1,i));
+            derivInv2 = 1/(det)^2*derivInv2;
+            %derivInv = -ddet_dmu/det^2*AM +1/det*dAM_dmu;
+            J(i,j) = Mi_deriv(i,1:end)*(dAt*invA*Np(1:3,1:end,i)+At*invA*dNp+...
+                At*derivInv2*Np(1:3,1:end,i)+dNt)*Zi_arr(1:end,i);
+            %***************************************
+        end
+    end
+      
+    for i = 1:12
+        At = Mt_arr(1:3,1:3,i);
+        Nt = Mt_arr(1:3,4:end,i);
+        J(i,13) = Mi_deriv(i,1:end)*(At*inv(ThetaM-Ap(1:3,1:3,i))*...
+            Np(1:3,1:end,i)+Nt)*derivRotation(1:end,1:end,i)*Zi;
+    end
+    
+    dFCM_dmu = zeros(length(FCM),length(FCM),12);
+    derivInv2 = zeros(3,3);
+    derivAp = zeros(3,3);
+    det = (1-Ap_mat(3,3))*(1-Ap_mat(1,1)-Ap_mat(2,2)+Ap_mat(1,1)*Ap_mat(2,2)-...
+        Ap_mat(1,2)*Ap_mat(2,1));
+    for i = 1:12
+        derivAp = dPhi_dmu(1:3,1:3,i);
+        ddet_mu = (-1+Ap_mat(2,2)+Ap_mat(3,3)-Ap_mat(3,3)*Ap_mat(2,2))*derivAp(1,1)+...
+            (-Ap_mat(2,1)+Ap_mat(3,3)*Ap_mat(2,1))*derivAp(1,2)+...
+            (-Ap_mat(1,2)+Ap_mat(3,3)*Ap_mat(1,2))*derivAp(2,1)+...
+            (-1+Ap_mat(1,1)+Ap_mat(3,3)-Ap_mat(3,3)*Ap_mat(1,1))*derivAp(2,2)+...
+            (-1+Ap_mat(1,1)+Ap_mat(2,2)-Ap_mat(1,1)*Ap_mat(2,2)+Ap_mat(1,2)*Ap_mat(2,1))*derivAp(3,3);
+        derivInv2(1,1) = det*(-derivAp(2,2)-derivAp(3,3)+Ap_mat(2,2)*derivAp(3,3)+...
+            Ap_mat(3,3)*derivAp(2,2))-ddet_mu*(1-Ap_mat(2,2)-Ap_mat(3,3)+Ap_mat(2,2)*Ap_mat(3,3));
+        derivInv2(1,2) = det*(derivAp(1,2)-Ap_mat(1,2)*derivAp(3,3)-Ap_mat(3,3)*derivAp(1,2))-...
+            ddet_mu*(Ap_mat(1,2)-Ap_mat(1,2)*Ap_mat(3,3));
+        derivInv2(2,1) = det*(derivAp(2,1)-Ap_mat(2,1)*derivAp(3,3)-Ap_mat(3,3)*derivAp(2,1))-...
+            ddet_mu*(Ap_mat(2,1)-Ap_mat(2,1)*Ap_mat(3,3));
+        derivInv2(2,2) = det*(-derivAp(1,1)-derivAp(3,3)+Ap_mat(1,1)*derivAp(3,3)+...
+            Ap_mat(3,3)*derivAp(1,1))-ddet_mu*(1-Ap_mat(1,1)-Ap_mat(3,3)+Ap_mat(1,1)*Ap_mat(3,3));  
+        derivInv2(3,3) = det*(-derivAp(1,1)-derivAp(2,2)+Ap_mat(1,1)*derivAp(2,2)+...
+            Ap_mat(2,2)*derivAp(1,1)-Ap_mat(1,2)*derivAp(2,1)-Ap_mat(2,1)*derivAp(1,2))-...
+            ddet_mu*(1-Ap_mat(1,1)-Ap_mat(2,2)+Ap_mat(1,1)*Ap_mat(2,2)-Ap_mat(1,2)*Ap_mat(2,1));
+        derivInv2 = 1/(det)^2*derivInv2;
+        dFCM_dmu(1:end,1:end,i) = dPhi_dmu(3+3*lenHarm+1+1:end,1:3,i)*...
+            (inv(eye(3,3)-Ap_mat))*Np_mat+Hp*derivInv2*Np_mat+...
+            Hp*inv(eye(3,3)-Ap_mat)*dPhi_dmu(1:3,4:3*lenHarm+4,i)+...
+            dPhi_dmu(3*lenHarm+5:end,4:4+3*lenHarm,i);
+        Ctemp = dFCM_dmu(1:end,1:end,i)*Zi_arr(1:end,1);
+        Ctemp = Ctemp(2*lenHarm+1);
+        %J(13,i) = (Idc*Vdc+Rdc*Idc^2)*Ctemp;
+        J(13,i) = (Vdc+2*Rdc*Idc)*Ctemp;
+    end
+     %J(1:12,1:12) = -J(1:12,1:12);
+     J11 = zeros(12,12);
+     for i = 1:12
+         for j =1:12
+             J11(i,j) = calcJ11(lenHarm,Ap(1:end,1:end,i),Np(1:end,1:end,i),...
+                 Mt_arr(1:end,1:end,i),derivMt(1:end,1:end,i),...
+                 dMp_dmu(1:end,1:end,j,i),Zi_arr(1:end,i),Mi(i,1:end),i-j);
+         end
+     end
+     J(1:12,1:12) = J11;
+     
+     J(13,13) = dIdc_dalpha*(Vdc+2*Rdc*Idc);
+    %******************
+    %At this point the Matrices should be solved for and I should be able
+    %to immediatly obtain M1, M2, M3
+
+    M = zeros(13,1);
+    for i = 1:12
+        At = Mt_arr(1:3,1:3,i);
+        Nt = Mt_arr(1:3,4:end,i);
+        M(i) = 0-Mi(i,1:end)*(At*inv(ThetaM-Ap(1:3,1:3,i))*Np(1:3,1:end,i)+Nt)*Zi_arr(1:end,i);
+    end
+  
+    M(13) = Pload - (Idc*Vdc+Rdc*Idc^2);
+    %M(7) = (new_mu(7)-mu(7))/mu(7)*100;
+    
+    new_mu = mu + J\M;
+    
+    flag2 = 0;
+    for i = 1:13
+        if abs(M(i)) > tolerance
+            flag2 = 1;
+            break;
+        end
+    end
+    
+    if flag2 == 0
+        break;
+    end
+%         for i = 1:12
+%             if new_mu(i) > pi/6 || new_mu(i) < 0
+%                 new_mu(i) = pi/12;
+%             elseif new_mu(i) < 0
+%                 new_mu(i) = 0;
+%             end
+%         end
+%     if new_mu(13) > pi/6
+%         new_mu(13) = pi/12;
+%     end
+    
+        if countIter > 25
+            %countIter
+            break;
+        end
+    mu = new_mu;
+    alpha = new_mu(13);
+    if max(mu(1:12)) > pi/6 || min(mu(1:12)) < 0
+        flag_error = flag_error +1;
+    else
+        flag_error = 0;
+    end
+%     if(flag_error > 2)
+%         iterAdd = iterAdd+0.01;
+%         mu(1:12) = mu_in+iterAdd*ones(12,1);
+%         alpha = alpha_in+iterAdd;
+%         mu(13) = alpha;
+%     end
+    
+    countIter = countIter + 1;
+end
+
+%alpha = mu(7);
+%alpha = 0;
+RotationMatrix2 = zeros(length(FCM));
+count = 1;
+for i  = -h:1:h
+    RotationMatrix2(count:count+1,count:count+1) = [cos(-i*(alpha)),...
+        -sin(-i*(alpha));sin(-i*(alpha)) cos(-i*(alpha))];
+    count = count + 2;
+end
+for i  = 0:1:h
+    RotationMatrix2(count:count+1,count:count+1) = [cos(-i*(alpha)),...
+        -sin(-i*(alpha));sin(-i*(alpha)) cos(-i*(alpha))];
+    count = count + 2;
+end
+%Not sure if this is the correct rotation matrix...wouldn't the rotation
+%matrix be the inverse of the RotationMatrix(1:end,1:end,1) matrix???
+tempM = eye(3*lenHarm+1);
+tempM(2*lenHarm+3:end,2*lenHarm+1:end) = 2*tempM(2*lenHarm+3:end,2*lenHarm+1:end);
+I = tempM*RotationMatrix2*I;
+mu_out = mu(1:12);
+%FCM = tempM*RotationMatrix2*FCM;
+
+for i = 1:6
+   if mu(i) < 0 || mu(i) > gamma(i)
+       error = 1;
+   end
+end
+if error ~= 0
+    Idc = Iinit;
+end
+
+Pest = Idc*Vdc+Rdc*Idc^2;
+
+[Ia Ib Ic fundCurrents] = getI_abc_fundCurrents(I,h);

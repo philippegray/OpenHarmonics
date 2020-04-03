@@ -1,0 +1,6 @@
+function J23_entry = calcJ23(Ap,Np,Zi,Mi,dRotation,constMtx,L,R,Ldc,Rdc)
+
+InvImMtx = inv(eye(3)-Ap);
+
+J23_entry = (L*(2*R+Rdc)/(2*L+Ldc)-R)*Mi*InvImMtx*Np*(-dRotation)*Zi+...
+    constMtx*(-dRotation)*Zi;
