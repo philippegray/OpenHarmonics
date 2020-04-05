@@ -11,7 +11,7 @@ function [DSSObj DSSText DSSCircuit DSSSolution DSSMonitors busBasekVs] = startO
 
 DSSObj = actxserver('OpenDSSEngine.DSS');
 
-%Start = DSSObj.Start(0);
+Start = DSSObj.Start(0);
 %DSSText is a pointer to the DSSObj.Text object. DSSObj.Text is used when
 %you want to write new lines to the OpenDSS file.
 DSSText = DSSObj.Text;

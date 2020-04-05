@@ -14,13 +14,13 @@ global numHarmonics DSSText OpenDSSFile DSSCircuit %don't change
 %numHarmonics - changes the number of harmonic orders that you would like to analyze.
 %For example: numHarmonics = 27, would generate the harmonic spectrum up to and
 %including, the 27th harmonic.
-numHarmonics = 13;
+numHarmonics = 17;
 %This line references the full path of the OpenDSS circuit file
 %containing the network to be simulated. Make sure that the OpenDSS file is
 %located in the \OpenDSSFiles subfolder.
 OpenDSSFile = 'IEEE13Nodeckt';
 OpenDSSFileLoc = ...
-    'C:\Users\Phil\Dropbox\Masters\Matlab\OpenHarmonics\OpenDSSFiles\';
+    '"Include Directory Path Here"\supporting_opendss_files\';
 OpenDSSFile = [OpenDSSFileLoc,OpenDSSFile];
 
 %Initializes the communication interface (COM) between MATLAB and OpenDSS
@@ -37,7 +37,7 @@ sys = pwrconverters(); %don't change line
 sys = add(sys,'vsc','vsc1','634',100,862,55,-10);
 %sys = add(sys,'vsc','Conv1','634',100,480/sqrt(3)*sqrt(2)*2.2,66,-70); %type,name,bus,Srated(kVA),Vdc(V),P(kW),Q(kvar)%sys = add(sys,'vsc','Conv2','670',1,2000,0.5,-0.1);
 %sys = add(sys,'thyristor12','Conv4','634',100,480/sqrt(3)*sqrt(2)*0.6,40,'');
-%sys = add(sys,'diode6','Conv5','634',50,'',30,'');%
+sys = add(sys,'diode6','Conv5','634',50,'',30,'');%
 %sys = add(sys,'diode12','diode1','634',100,'',23,'');%
 %sys = add(sys,'thyristor12','thy1','634',50,480/sqrt(3)*sqrt(2)*1.0,40,'');
 %sys = add(sys,'thyristor12','thy2','634',10,0,6,'');%

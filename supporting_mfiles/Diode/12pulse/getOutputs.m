@@ -24,9 +24,9 @@ Imag = zeros(2*numHarmonics+1,1);
     
 %currents injected from converter  - IEEE13Nodeckt_Mon_conv1a
 for i = 1:sys.numConverters
-    name_a = [prefix,sys.converterArr(i).name,'a.csv'];
-    name_b = [prefix,sys.converterArr(i).name,'b.csv'];
-    name_c = [prefix,sys.converterArr(i).name,'c.csv'];
+    name_a = [prefix,sys.converterArr(i).name,'a_1.csv'];
+    name_b = [prefix,sys.converterArr(i).name,'b_1.csv'];
+    name_c = [prefix,sys.converterArr(i).name,'c_1.csv'];
     data_a = csvread(name_a,1,2,[1,2,numHarmonics,5]);
     data_b = csvread(name_b,1,2,[1,2,numHarmonics,5]);    
     data_c = csvread(name_c,1,2,[1,2,numHarmonics,5]);    
@@ -46,9 +46,9 @@ end
 index = i;
 %voltages of PCC corresponding to the converters
 for i = 1:length(VSolve)
-    filename_a = [prefix,'v_bus',char(VSolve(i)),'a.csv'];
-    filename_b = [prefix,'v_bus',char(VSolve(i)),'b.csv'];
-    filename_c = [prefix,'v_bus',char(VSolve(i)),'c.csv'];
+    filename_a = [prefix,'v_bus',char(VSolve(i)),'a_1.csv'];
+    filename_b = [prefix,'v_bus',char(VSolve(i)),'b_1.csv'];
+    filename_c = [prefix,'v_bus',char(VSolve(i)),'c_1.csv'];
     newField = ['V_bus',char(VSolve(i))];
     outputs.(newField) = [harmonicOrders,getV_sv(filename_a,filename_b,filename_c,numHarmonics)];
 end
